@@ -74,12 +74,13 @@ pub fn extract_units(
     seeds: &[crate::types::ImportedSymbol],
     exe_elf: &object::read::elf::ElfFile64<'_>,
 ) -> Result<(Vec<ExtractedUnit>, InitFiniArrays)> {
-    // Collect external symbol names defined in the executable's .dynsym (not SHN_UNDEF).
-    // These are callable from merged library code through trampolines.
+    // Collect symbol names from the executable's .dynsym that merged library code
+    // can reference. This includes both defined symbols (callable directly) and
+    // undefined/imported symbols (callable through the executable's PLT).
     let exe_defined_syms: HashSet<String> = exe_elf
         .dynamic_symbols()
-        .filter(|s| !s.is_undefined())
         .filter_map(|s| s.name().ok().map(String::from))
+        .filter(|name| !name.is_empty())
         .collect();
 
     let mut state = ExtractionState {
@@ -212,17 +213,21 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
     let section_vaddr = section.address();
     let offset_in_section = (sym_vaddr - section_vaddr) as usize;
 
-    if offset_in_section + sym_size > section_data.len() {
-        bail!(
-            "symbol '{}' byte range [{}, {}) overflows section of size {}",
-            key.sym,
-            offset_in_section,
-            offset_in_section + sym_size,
-            section_data.len()
-        );
-    }
-
-    let bytes = section_data[offset_in_section..offset_in_section + sym_size].to_vec();
+    let bytes = if section.kind() == ObjSectionKind::UninitializedData {
+        // .bss has no file-backed data — emit zero-filled bytes
+        vec![0u8; sym_size]
+    } else {
+        if offset_in_section + sym_size > section_data.len() {
+            bail!(
+                "symbol '{}' byte range [{}, {}) overflows section of size {}",
+                key.sym,
+                offset_in_section,
+                offset_in_section + sym_size,
+                section_data.len()
+            );
+        }
+        section_data[offset_in_section..offset_in_section + sym_size].to_vec()
+    };
     let alignment = section.align().max(1);
 
     // Collect relocations that fall within this symbol's byte range.
@@ -290,10 +295,15 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
                     // Try to extract this data section containing the symbol
                     // This will populate state.data_blobs if it's a data section
                     let extract_result = ensure_data_blob_extracted(elf64, ts_vaddr, &key.lib, state);
-                    if let Ok(Some((blob_id, blob_base))) = extract_result {
+                    if let Ok(Some((blob_id, blob_base, blob_deps))) = extract_result {
                         let offset_in_blob = ts_vaddr - blob_base;
                         eprintln!("DEBUG: Code relocation to '{}' at {:#x} -> DataBlobOffset(blob={:?}, offset={:#x})",
                             ts_name, ts_vaddr, blob_id, offset_in_blob);
+                        for dep in blob_deps {
+                            if !new_deps.iter().any(|k| k.sym == dep.sym) {
+                                new_deps.push(dep);
+                            }
+                        }
                         RelocTarget::DataBlobOffset(blob_id, offset_in_blob)
                     } else {
                         eprintln!("DEBUG: Failed to extract data blob for '{}' at {:#x}, treating as code unit",
@@ -349,6 +359,7 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
             }
 
             if rip_ref.is_code_ref {
+                eprintln!("DEBUG: {} code ref at offset {:#x} -> target {:#x}", key.sym, rip_ref.offset, target_addr);
                 // First check if this is a PLT call (call to external symbol)
                 if let Some(ext_name) = find_plt_target(elf64, target_addr, &lib_bytes) {
                     // This is a call to an external symbol via PLT
@@ -389,11 +400,39 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
                     }
                 }
             } else {
-                // Data reference (LEA/MOV) - extract the data section if needed
-                if let Some((blob_id, blob_base)) =
+                // Data reference (LEA/MOV) — could be loading address of data or code
+                // First try as a code symbol (e.g. LEA loading a function pointer)
+                if let Some(target_name) = find_symbol_at_address(elf64, target_addr) {
+                    if find_symbol(elf64, &target_name).is_ok() {
+                        let dep_key = UnitKey {
+                            lib: key.lib.clone(),
+                            sym: target_name,
+                        };
+                        if !new_deps.iter().any(|k| k.sym == dep_key.sym) {
+                            new_deps.push(dep_key.clone());
+                        }
+                        pending_relocs.push((relocations.len(), dep_key));
+                        relocations.push(ExtractedReloc {
+                            offset_within_unit: rip_ref.offset as u64,
+                            kind: object::RelocationKind::Relative,
+                            encoding: object::RelocationEncoding::Generic,
+                            size: 32,
+                            addend: -4,
+                            target: RelocTarget::MergedUnit(UnitId(u32::MAX)),
+                        });
+                        continue;
+                    }
+                }
+                // Otherwise try to extract the data section
+                if let Some((blob_id, blob_base, blob_deps)) =
                     ensure_data_blob_extracted(elf64, target_addr, &key.lib, state)?
                 {
                     let offset_in_blob = target_addr - blob_base;
+                    for dep in blob_deps {
+                        if !new_deps.iter().any(|k| k.sym == dep.sym) {
+                            new_deps.push(dep);
+                        }
+                    }
                     // Add synthetic PC-relative relocation pointing to data blob
                     relocations.push(ExtractedReloc {
                         offset_within_unit: rip_ref.offset as u64,
@@ -411,7 +450,7 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
         }
     }
 
-    // Jump table detection via heuristic pattern matching
+    // Jump table detection via symbolic execution
     if section_kind == SectionKind::Text {
         if let Ok(jump_tables) = crate::jump_table::detect_jump_tables(
             &bytes,
@@ -426,15 +465,28 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
 
             for table in jump_tables {
                 // 1. Ensure .rodata blob containing table is extracted
-                if let Some((blob_id, blob_base)) =
+                if let Some((blob_id, blob_base, blob_deps)) =
                     ensure_data_blob_extracted(elf64, table.table_vaddr, &key.lib, state)?
                 {
+                    for dep in blob_deps {
+                        if !new_deps.iter().any(|k| k.sym == dep.sym) {
+                            new_deps.push(dep);
+                        }
+                    }
                     eprintln!("DEBUG:   Table at {:#x}: {} entries in {}",
                         table.table_vaddr, table.num_entries, table.section_name);
 
                     // 2. Create relocations for each table entry
                     for (idx, target_addr) in table.targets.iter().enumerate() {
                         let entry_offset_in_blob = (table.table_vaddr - blob_base) + (idx * 4) as u64;
+
+                        // Skip if a relocation already exists at this offset (from another
+                        // function detecting an overlapping table at the same .rodata address)
+                        if let Some(blob_unit) = state.units.iter().find(|u| u.id == blob_id) {
+                            if blob_unit.relocations.iter().any(|r| r.offset_within_unit == entry_offset_in_blob) {
+                                continue;
+                            }
+                        }
 
                         // 3. Find or extract target function
                         let target_name = crate::jump_table::find_symbol_at_address(elf64, *target_addr)
@@ -633,136 +685,54 @@ struct RipRelativeRef {
 /// Scan machine code for all RIP-relative references (calls, jumps, and data accesses).
 /// Returns a list of references with their offsets and target addresses.
 fn scan_rip_relative_refs(bytes: &[u8], base_vaddr: u64) -> Vec<RipRelativeRef> {
+    use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, OpKind};
+
     let mut refs = Vec::new();
-    let mut i = 0;
+    let mut decoder = Decoder::with_ip(64, bytes, base_vaddr, DecoderOptions::NONE);
+    let mut instr = Instruction::default();
 
-    while i < bytes.len() {
-        // E8 xx xx xx xx = CALL rel32 (5 bytes)
-        if bytes[i] == 0xE8 && i + 5 <= bytes.len() {
-            let rel32 = i32::from_le_bytes([bytes[i+1], bytes[i+2], bytes[i+3], bytes[i+4]]);
-            let target = (base_vaddr as i64 + i as i64 + 5 + rel32 as i64) as u64;
-            refs.push(RipRelativeRef {
-                offset: i + 1,
-                target_vaddr: target,
-                is_code_ref: true,
-            });
-            i += 5;
-            continue;
-        }
+    while decoder.can_decode() {
+        decoder.decode_out(&mut instr);
+        let instr_offset = (instr.ip() - base_vaddr) as usize;
 
-        // E9 xx xx xx xx = JMP rel32 (5 bytes)
-        if bytes[i] == 0xE9 && i + 5 <= bytes.len() {
-            let rel32 = i32::from_le_bytes([bytes[i+1], bytes[i+2], bytes[i+3], bytes[i+4]]);
-            let target = (base_vaddr as i64 + i as i64 + 5 + rel32 as i64) as u64;
-            refs.push(RipRelativeRef {
-                offset: i + 1,
-                target_vaddr: target,
-                is_code_ref: true,
-            });
-            i += 5;
-            continue;
-        }
-
-        // 0F 8x xx xx xx xx = Jcc rel32 (6 bytes) - conditional jumps
-        if bytes[i] == 0x0F && i + 6 <= bytes.len() && (bytes[i+1] & 0xF0) == 0x80 {
-            let rel32 = i32::from_le_bytes([bytes[i+2], bytes[i+3], bytes[i+4], bytes[i+5]]);
-            let target = (base_vaddr as i64 + i as i64 + 6 + rel32 as i64) as u64;
-            refs.push(RipRelativeRef {
-                offset: i + 2,
-                target_vaddr: target,
-                is_code_ref: true,
-            });
-            i += 6;
-            continue;
-        }
-
-        // Check for RIP-relative addressing in ModR/M byte (mod=00, r/m=101)
-        // This appears in LEA, MOV, and other instructions.
-        // We need to handle REX prefixes (0x40-0x4F) and optional prefixes.
-
-        let mut pos = i;
-
-        // Skip legacy prefixes (66, 67, F2, F3, 2E, 3E, 26, 64, 65, 36)
-        while pos < bytes.len() && matches!(bytes[pos], 0x66 | 0x67 | 0xF2 | 0xF3 | 0x2E | 0x3E | 0x26 | 0x64 | 0x65 | 0x36) {
-            pos += 1;
-        }
-
-        // Check for REX prefix (0x40-0x4F)
-        let has_rex = pos < bytes.len() && (bytes[pos] & 0xF0) == 0x40;
-        if has_rex {
-            pos += 1;
-        }
-
-        if pos >= bytes.len() {
-            i += 1;
-            continue;
-        }
-
-        let opcode = bytes[pos];
-        pos += 1;
-
-        // Check for two-byte opcode (0F xx)
-        let is_two_byte = opcode == 0x0F;
-        if is_two_byte {
-            if pos >= bytes.len() {
-                i += 1;
-                continue;
+        match instr.flow_control() {
+            FlowControl::Call | FlowControl::UnconditionalBranch | FlowControl::ConditionalBranch => {
+                // Near call/jmp/jcc with rel32 — the displacement starts after the opcode bytes
+                if instr.op_count() >= 1 && instr.op_kind(0) == OpKind::NearBranch64 {
+                    let target = instr.near_branch_target();
+                    // The displacement occupies the last 4 bytes of the instruction
+                    let disp_offset = instr_offset + instr.len() - 4;
+                    refs.push(RipRelativeRef {
+                        offset: disp_offset,
+                        target_vaddr: target,
+                        is_code_ref: true,
+                    });
+                }
             }
-            pos += 1; // Skip second opcode byte
-        }
-
-        // Now check if there's a ModR/M byte with RIP-relative addressing
-        // ModR/M with mod=00, r/m=101 indicates RIP-relative
-        if pos < bytes.len() {
-            let modrm = bytes[pos];
-            let mod_bits = (modrm >> 6) & 0x3;
-            let rm_bits = modrm & 0x7;
-
-            // mod=00 and r/m=101 = RIP-relative addressing (32-bit displacement follows)
-            if mod_bits == 0 && rm_bits == 5 {
-                let disp_offset = pos + 1;
-                if disp_offset + 4 <= bytes.len() {
-                    let rel32 = i32::from_le_bytes([
-                        bytes[disp_offset],
-                        bytes[disp_offset + 1],
-                        bytes[disp_offset + 2],
-                        bytes[disp_offset + 3],
-                    ]);
-                    // RIP points to after the instruction. The instruction length is:
-                    // disp_offset + 4 - i (from start to end of displacement)
-                    let instr_end = disp_offset + 4;
-                    let rip = base_vaddr + instr_end as u64;
-                    let target = (rip as i64 + rel32 as i64) as u64;
-
-                    // Only add if this looks like a valid instruction with RIP-relative addressing
-                    // Common opcodes that use RIP-relative: 8B (MOV), 8D (LEA), 89 (MOV), etc.
-                    let valid_opcode = if is_two_byte {
-                        true // Two-byte opcodes are complex, assume valid
-                    } else {
-                        matches!(opcode,
-                            0x8B | 0x8D | 0x89 | 0x8A | 0x88 | // MOV, LEA
-                            0x03 | 0x0B | 0x13 | 0x1B | 0x23 | 0x2B | 0x33 | 0x3B | // arithmetic
-                            0x39 | 0x3D | 0x85 | 0x84 | // CMP, TEST
-                            0xC7 | 0xC6 | // MOV immediate
-                            0xFF | 0xFE | // INC/DEC, CALL/JMP indirect
-                            0x63 // MOVSXD
-                        )
-                    };
-
-                    if valid_opcode {
-                        refs.push(RipRelativeRef {
-                            offset: disp_offset,
-                            target_vaddr: target,
-                            is_code_ref: false,
-                        });
-                        i = instr_end;
-                        continue;
+            _ => {
+                // Check all operands for RIP-relative memory references
+                for op_idx in 0..instr.op_count() {
+                    if instr.op_kind(op_idx) == OpKind::Memory && instr.is_ip_rel_memory_operand() {
+                        let target = instr.ip_rel_memory_address();
+                        // Find the displacement bytes within the instruction.
+                        // The disp32 encodes (target - next_ip) as a signed 32-bit value.
+                        let disp32 = (target as i64 - instr.next_ip() as i64) as i32;
+                        let disp_bytes = disp32.to_le_bytes();
+                        let instr_bytes = &bytes[instr_offset..instr_offset + instr.len()];
+                        // Search backwards — the displacement is near the end
+                        let disp_pos = instr_bytes.windows(4).rposition(|w| w == disp_bytes);
+                        if let Some(pos) = disp_pos {
+                            refs.push(RipRelativeRef {
+                                offset: instr_offset + pos,
+                                target_vaddr: target,
+                                is_code_ref: false,
+                            });
+                        }
+                        break; // Only one memory operand per instruction
                     }
                 }
             }
         }
-
-        i += 1;
     }
 
     refs
@@ -880,7 +850,7 @@ fn ensure_data_blob_extracted(
     target_addr: u64,
     lib: &PathBuf,
     state: &mut ExtractionState,
-) -> Result<Option<(UnitId, u64)>> {
+) -> Result<Option<(UnitId, u64, Vec<UnitKey>)>> {
     // Find the section containing this address
     let (sec_name, sec_addr, sec_size, sec_data, sec_kind) =
         match find_section_for_address(elf64, target_addr) {
@@ -900,7 +870,7 @@ fn ensure_data_blob_extracted(
 
     // Check if already extracted
     if let Some(info) = state.data_blobs.get(&blob_key) {
-        return Ok(Some((info.id, info.base_vaddr)));
+        return Ok(Some((info.id, info.base_vaddr, Vec::new())));
     }
 
     // Find the corresponding section object to extract relocations
@@ -1008,18 +978,11 @@ fn ensure_data_blob_extracted(
                     sym: target_name,
                 };
 
-                if state.extracted.contains_key(&dep_key) {
-                    // Symbol already extracted, create relocation
-                    pending_relocs.push((relocations.len(), dep_key.clone()));
-                    eprintln!("DEBUG: Data blob '{}' relocation -> extracted symbol '{}'", sec_name, dep_key.sym);
-                    RelocTarget::MergedUnit(UnitId(u32::MAX))
-                } else {
-                    // Symbol not extracted yet - skip this relocation
-                    // The pointer will stay as-is (pointing to unmapped memory), which is fine
-                    // if the code never uses it
-                    eprintln!("DEBUG: Data blob '{}' SKIPPING relocation -> unextracted symbol '{}'", sec_name, dep_key.sym);
-                    continue;
+                if !new_deps.iter().any(|k| k.sym == dep_key.sym) {
+                    new_deps.push(dep_key.clone());
                 }
+                pending_relocs.push((relocations.len(), dep_key));
+                RelocTarget::MergedUnit(UnitId(u32::MAX))
             } else {
                 // Unknown target address, skip this relocation
                 continue;
@@ -1047,18 +1010,6 @@ fn ensure_data_blob_extracted(
     // Register pending relocations for this data blob
     for (reloc_idx, dep_key) in pending_relocs {
         state.pending.push((id, reloc_idx, dep_key));
-    }
-
-    // Add new dependencies to worklist (this will be handled by the caller)
-    // Note: We can't directly add to the worklist here, but the caller will handle new_deps
-    // For now, we just ensure the symbols are registered if needed
-    for dep_key in &new_deps {
-        if !state.extracted.contains_key(dep_key) {
-            // Mark that we need to extract this dependency
-            // The caller process_symbol will add it to new_deps and it will be processed
-            // But we need to trigger extraction - this is a limitation of the current design
-            // For now, we'll rely on the fact that code references should have pulled these in
-        }
     }
 
     // Debug output for data blobs with relocations
@@ -1100,7 +1051,7 @@ fn ensure_data_blob_extracted(
         },
     );
 
-    Ok(Some((id, sec_addr)))
+    Ok(Some((id, sec_addr, new_deps)))
 }
 
 /// Infer symbol size from the next symbol in the same section by address.

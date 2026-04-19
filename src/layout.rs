@@ -178,10 +178,8 @@ fn assign_addresses(
             let align = unit.alignment.max(1);
             *offset = align_up(*offset, align);
             let assigned_vaddr = load_address + *offset;
-            if unit.name.contains(".rodata") {
-                eprintln!("DEBUG: Assigning {} (UnitId={}) to VA {:#x} (offset from load={:#x})",
-                    unit.name, unit.id.0, assigned_vaddr, *offset);
-            }
+            eprintln!("DEBUG: Assigning {} (UnitId={}, size={:#x}) to VA {:#x} (offset from load={:#x})",
+                unit.name, unit.id.0, unit.size, assigned_vaddr, *offset);
             *offset += unit.size as u64;
             AssignedUnit {
                 unit,
