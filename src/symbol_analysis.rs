@@ -27,7 +27,7 @@ pub fn parse_dynamic(elf: &ElfFile64<'_>) -> Result<DynamicInfo> {
 
     if let Some(dynamic) = &goblin_elf.dynamic {
         for entry in &dynamic.dyns {
-            let tag = entry.d_tag as u64;
+            let tag = entry.d_tag;
             if tag == DT_NEEDED {
                 if let Some(s) = goblin_elf.dynstrtab.get_at(entry.d_val as usize) {
                     needed.push(s.to_owned());
@@ -36,10 +36,10 @@ pub fn parse_dynamic(elf: &ElfFile64<'_>) -> Result<DynamicInfo> {
                 if let Some(s) = goblin_elf.dynstrtab.get_at(entry.d_val as usize) {
                     rpath.extend(s.split(':').filter(|p| !p.is_empty()).map(PathBuf::from));
                 }
-            } else if tag == DT_RUNPATH {
-                if let Some(s) = goblin_elf.dynstrtab.get_at(entry.d_val as usize) {
-                    runpath.extend(s.split(':').filter(|p| !p.is_empty()).map(PathBuf::from));
-                }
+            } else if tag == DT_RUNPATH
+                && let Some(s) = goblin_elf.dynstrtab.get_at(entry.d_val as usize)
+            {
+                runpath.extend(s.split(':').filter(|p| !p.is_empty()).map(PathBuf::from));
             }
         }
     }
@@ -76,13 +76,12 @@ pub fn collect_imports(
         if is_excluded(needed) {
             continue;
         }
-        if let Some(filter) = merge_filter {
-            if !filter
+        if let Some(filter) = merge_filter
+            && !filter
                 .iter()
                 .any(|f| f == needed || needed.starts_with(f.as_str()))
-            {
-                continue;
-            }
+        {
+            continue;
         }
 
         let lib_path = resolve_library(needed, &search_rpath, search_runpath, ldso_cache)
@@ -94,13 +93,13 @@ pub fn collect_imports(
             .with_context(|| format!("parsing {}", lib_path.display()))?;
 
         for sym in lib_goblin.dynsyms.iter() {
-            if sym.st_shndx != goblin::elf::section_header::SHN_UNDEF as usize && sym.st_shndx != 0
+            if sym.st_shndx != goblin::elf::section_header::SHN_UNDEF as usize
+                && sym.st_shndx != 0
+                && let Some(name) = lib_goblin.dynstrtab.get_at(sym.st_name)
             {
-                if let Some(name) = lib_goblin.dynstrtab.get_at(sym.st_name) {
-                    sym_to_lib
-                        .entry(name.to_owned())
-                        .or_insert_with(|| lib_path.clone());
-                }
+                sym_to_lib
+                    .entry(name.to_owned())
+                    .or_insert_with(|| lib_path.clone());
             }
         }
     }

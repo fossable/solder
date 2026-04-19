@@ -10,7 +10,7 @@ use crate::types::{MergePlan, RelativeReloc};
 ///
 /// For PIE executables, this also populates `plan.relative_relocs` with entries
 /// for the patched GOT slots that need R_X86_64_RELATIVE relocations.
-pub fn apply_patches(exe_bytes: &mut Vec<u8>, plan: &mut MergePlan) -> Result<()> {
+pub fn apply_patches(exe_bytes: &mut [u8], plan: &mut MergePlan) -> Result<()> {
     patch_got(exe_bytes, plan)?;
     zero_jump_slot_relocs(exe_bytes, plan)?;
     remove_dt_needed(exe_bytes, plan)?;
@@ -20,7 +20,7 @@ pub fn apply_patches(exe_bytes: &mut Vec<u8>, plan: &mut MergePlan) -> Result<()
 
 /// Write each resolved symbol address into the executable's GOT.
 /// For PIE, also record RELATIVE relocations for each patched slot.
-fn patch_got(bytes: &mut Vec<u8>, plan: &mut MergePlan) -> Result<()> {
+fn patch_got(bytes: &mut [u8], plan: &mut MergePlan) -> Result<()> {
     for patch in &plan.got_patches {
         let off = patch.got_file_offset as usize;
         if off + 8 > bytes.len() {
@@ -47,7 +47,7 @@ fn patch_got(bytes: &mut Vec<u8>, plan: &mut MergePlan) -> Result<()> {
 /// so ld.so won't re-resolve them and overwrite our GOT entries.
 /// Each reloc entry file offset points to the r_info field (8 bytes into the entry).
 /// We zero both r_info (8 bytes) and r_addend (8 bytes) = 16 bytes total.
-fn zero_jump_slot_relocs(bytes: &mut Vec<u8>, plan: &MergePlan) -> Result<()> {
+fn zero_jump_slot_relocs(bytes: &mut [u8], plan: &MergePlan) -> Result<()> {
     for &off in &plan.jump_slot_reloc_offsets {
         let off = off as usize;
         if off + 16 > bytes.len() {
@@ -62,7 +62,7 @@ fn zero_jump_slot_relocs(bytes: &mut Vec<u8>, plan: &MergePlan) -> Result<()> {
 ///
 /// Strategy: find the entry in .dynamic matching the soname, then shift all
 /// subsequent entries up by one slot, zeroing the last slot.
-fn remove_dt_needed(bytes: &mut Vec<u8>, plan: &MergePlan) -> Result<()> {
+fn remove_dt_needed(bytes: &mut [u8], plan: &MergePlan) -> Result<()> {
     if plan.remove_needed.is_empty() {
         return Ok(());
     }
@@ -148,7 +148,7 @@ fn find_section_file_offset(bytes: &[u8], name: &str) -> Result<u64> {
 /// 1. Find entries to remove by matching vn_file against plan.remove_needed
 /// 2. Update vn_next pointers to skip removed entries (linked list surgery)
 /// 3. Decrement DT_VERNEEDNUM in .dynamic
-fn remove_verneed_entries(bytes: &mut Vec<u8>, plan: &MergePlan) -> Result<()> {
+fn remove_verneed_entries(bytes: &mut [u8], plan: &MergePlan) -> Result<()> {
     if plan.remove_needed.is_empty() {
         return Ok(());
     }
@@ -218,10 +218,10 @@ fn remove_verneed_entries(bytes: &mut Vec<u8>, plan: &MergePlan) -> Result<()> {
             let vn_next = u32::from_le_bytes(bytes[offset + 12..offset + 16].try_into().unwrap());
 
             // Check if this entry's library matches one we're removing
-            if let Some(lib_name) = goblin_elf.dynstrtab.get_at(vn_file as usize) {
-                if plan.remove_needed.iter().any(|s| s == lib_name) {
-                    entries_to_remove.push(offset as u64);
-                }
+            if let Some(lib_name) = goblin_elf.dynstrtab.get_at(vn_file as usize)
+                && plan.remove_needed.iter().any(|s| s == lib_name)
+            {
+                entries_to_remove.push(offset as u64);
             }
 
             if vn_next == 0 {
@@ -307,15 +307,15 @@ fn remove_verneed_entries(bytes: &mut Vec<u8>, plan: &MergePlan) -> Result<()> {
     }
 
     // Update DT_VERNEEDNUM in .dynamic
-    if removed_count > 0 {
-        if let Some(idx) = verneednum_dyn_idx {
-            let entry_offset = dyn_section_offset as usize + idx * 16 + 8; // d_val is at offset 8
-            if entry_offset + 8 <= bytes.len() {
-                let current =
-                    u64::from_le_bytes(bytes[entry_offset..entry_offset + 8].try_into().unwrap());
-                let new_count = current.saturating_sub(removed_count);
-                bytes[entry_offset..entry_offset + 8].copy_from_slice(&new_count.to_le_bytes());
-            }
+    if removed_count > 0
+        && let Some(idx) = verneednum_dyn_idx
+    {
+        let entry_offset = dyn_section_offset as usize + idx * 16 + 8; // d_val is at offset 8
+        if entry_offset + 8 <= bytes.len() {
+            let current =
+                u64::from_le_bytes(bytes[entry_offset..entry_offset + 8].try_into().unwrap());
+            let new_count = current.saturating_sub(removed_count);
+            bytes[entry_offset..entry_offset + 8].copy_from_slice(&new_count.to_le_bytes());
         }
     }
 

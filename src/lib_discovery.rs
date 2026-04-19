@@ -68,10 +68,10 @@ pub fn resolve_library(
     }
 
     // 4. ld.so.cache
-    if let Some(path) = ldso_cache.lookup(soname) {
-        if path.exists() {
-            return Ok(path.to_owned());
-        }
+    if let Some(path) = ldso_cache.lookup(soname)
+        && path.exists()
+    {
+        return Ok(path.to_owned());
     }
 
     // 5. Default paths

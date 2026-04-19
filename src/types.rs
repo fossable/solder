@@ -4,9 +4,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct InitFiniEntry {
     /// Path to the library this entry came from.
-    pub source_lib: PathBuf,
+    pub _source_lib: PathBuf,
     /// Original virtual address of the function in the library.
-    pub func_vaddr: u64,
+    pub _func_vaddr: u64,
 }
 
 /// Extracted init/fini arrays from merged libraries.

@@ -378,6 +378,7 @@ fn parse_dynamic_info(bytes: &[u8]) -> Result<DynamicInfo> {
 /// (DT_RELACOUNT specifies how many), followed by other relocation types (R_X86_64_64,
 /// R_X86_64_GLOB_DAT, etc.). We must insert our new RELATIVE entries after the existing
 /// RELATIVE entries but before the non-RELATIVE entries to maintain this invariant.
+#[allow(clippy::type_complexity)]
 fn build_extended_segment_with_rela(
     patched_exe: &[u8],
     merged_seg: &[u8],

@@ -13,6 +13,7 @@ use crate::types::{
 
 /// Plan the virtual address layout of all extracted units and trampolines,
 /// producing a `MergePlan` ready for relocation application.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_layout(
     mut units: Vec<ExtractedUnit>,
     exe_elf: &object::read::elf::ElfFile64<'_>,

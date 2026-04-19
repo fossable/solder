@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind as ObjSectionKind};
@@ -401,26 +401,26 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
             } else {
                 // Data reference (LEA/MOV) — could be loading address of data or code
                 // First try as a code symbol (e.g. LEA loading a function pointer)
-                if let Some(target_name) = find_symbol_at_address(elf64, target_addr) {
-                    if find_symbol(elf64, &target_name).is_ok() {
-                        let dep_key = UnitKey {
-                            lib: key.lib.clone(),
-                            sym: target_name,
-                        };
-                        if !new_deps.iter().any(|k| k.sym == dep_key.sym) {
-                            new_deps.push(dep_key.clone());
-                        }
-                        pending_relocs.push((relocations.len(), dep_key));
-                        relocations.push(ExtractedReloc {
-                            offset_within_unit: rip_ref.offset as u64,
-                            kind: object::RelocationKind::Relative,
-                            encoding: object::RelocationEncoding::Generic,
-                            size: 32,
-                            addend: -4,
-                            target: RelocTarget::MergedUnit(UnitId(u32::MAX)),
-                        });
-                        continue;
+                if let Some(target_name) = find_symbol_at_address(elf64, target_addr)
+                    && find_symbol(elf64, &target_name).is_ok()
+                {
+                    let dep_key = UnitKey {
+                        lib: key.lib.clone(),
+                        sym: target_name,
+                    };
+                    if !new_deps.iter().any(|k| k.sym == dep_key.sym) {
+                        new_deps.push(dep_key.clone());
                     }
+                    pending_relocs.push((relocations.len(), dep_key));
+                    relocations.push(ExtractedReloc {
+                        offset_within_unit: rip_ref.offset as u64,
+                        kind: object::RelocationKind::Relative,
+                        encoding: object::RelocationEncoding::Generic,
+                        size: 32,
+                        addend: -4,
+                        target: RelocTarget::MergedUnit(UnitId(u32::MAX)),
+                    });
+                    continue;
                 }
                 // Otherwise try to extract the data section
                 if let Some((blob_id, blob_base, blob_deps)) =
@@ -454,121 +454,118 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
     }
 
     // Jump table detection via symbolic execution
-    if section_kind == SectionKind::Text {
-        if let Ok(jump_tables) =
+    if section_kind == SectionKind::Text
+        && let Ok(jump_tables) =
             crate::jump_table::detect_jump_tables(&bytes, sym_vaddr, &key.sym, elf64, &lib_bytes)
-        {
-            if !jump_tables.is_empty() {
-                debug!(
-                    count = jump_tables.len(),
-                    symbol = key.sym,
-                    "Found jump tables"
-                );
-            }
+    {
+        if !jump_tables.is_empty() {
+            debug!(
+                count = jump_tables.len(),
+                symbol = key.sym,
+                "Found jump tables"
+            );
+        }
 
-            for table in jump_tables {
-                // 1. Ensure .rodata blob containing table is extracted
-                if let Some((blob_id, blob_base, blob_deps)) =
-                    ensure_data_blob_extracted(elf64, table.table_vaddr, &key.lib, state)?
-                {
-                    for dep in blob_deps {
-                        if !new_deps.iter().any(|k| k.sym == dep.sym) {
-                            new_deps.push(dep);
-                        }
+        for table in jump_tables {
+            // 1. Ensure .rodata blob containing table is extracted
+            if let Some((blob_id, blob_base, blob_deps)) =
+                ensure_data_blob_extracted(elf64, table.table_vaddr, &key.lib, state)?
+            {
+                for dep in blob_deps {
+                    if !new_deps.iter().any(|k| k.sym == dep.sym) {
+                        new_deps.push(dep);
                     }
-                    // 2. Create relocations for each table entry
-                    for (idx, target_addr) in table.targets.iter().enumerate() {
-                        let entry_offset_in_blob =
-                            (table.table_vaddr - blob_base) + (idx * 4) as u64;
+                }
+                // 2. Create relocations for each table entry
+                for (idx, target_addr) in table.targets.iter().enumerate() {
+                    let entry_offset_in_blob = (table.table_vaddr - blob_base) + (idx * 4) as u64;
 
-                        // Skip if a relocation already exists at this offset (from another
-                        // function detecting an overlapping table at the same .rodata address)
-                        if let Some(blob_unit) = state.units.iter().find(|u| u.id == blob_id) {
-                            if blob_unit
-                                .relocations
-                                .iter()
-                                .any(|r| r.offset_within_unit == entry_offset_in_blob)
-                            {
-                                continue;
-                            }
-                        }
+                    // Skip if a relocation already exists at this offset (from another
+                    // function detecting an overlapping table at the same .rodata address)
+                    if let Some(blob_unit) = state.units.iter().find(|u| u.id == blob_id)
+                        && blob_unit
+                            .relocations
+                            .iter()
+                            .any(|r| r.offset_within_unit == entry_offset_in_blob)
+                    {
+                        continue;
+                    }
 
-                        // 3. Find or extract target function
-                        let target_name =
-                            crate::jump_table::find_symbol_at_address(elf64, *target_addr)
-                                .unwrap_or_else(|| format!("jumptarget_{:x}", target_addr));
+                    // 3. Find or extract target function
+                    let target_name =
+                        crate::jump_table::find_symbol_at_address(elf64, *target_addr)
+                            .unwrap_or_else(|| format!("jumptarget_{:x}", target_addr));
 
-                        // 4. Check if target is within our own function (intra-function jump)
-                        let is_internal = *target_addr >= sym_vaddr
-                            && *target_addr < sym_vaddr + bytes.len() as u64;
+                    // 4. Check if target is within our own function (intra-function jump)
+                    let is_internal =
+                        *target_addr >= sym_vaddr && *target_addr < sym_vaddr + bytes.len() as u64;
 
-                        // 5. Compute the target symbol's base address to calculate offset
-                        let target_sym_vaddr = if is_internal {
-                            sym_vaddr
-                        } else {
-                            // Find the symbol that contains this address
-                            find_symbol(elf64, &target_name)
-                                .map(|s| s.vaddr)
-                                .unwrap_or(*target_addr)
+                    // 5. Compute the target symbol's base address to calculate offset
+                    let target_sym_vaddr = if is_internal {
+                        sym_vaddr
+                    } else {
+                        // Find the symbol that contains this address
+                        find_symbol(elf64, &target_name)
+                            .map(|s| s.vaddr)
+                            .unwrap_or(*target_addr)
+                    };
+
+                    // Calculate offset within the target function
+                    let offset_in_target = (*target_addr - target_sym_vaddr) as i64;
+
+                    // Jump table entry format: target = table_base + *(i32*)entry
+                    // Therefore: *(i32*)entry = target - table_base
+                    //
+                    // After relocation:
+                    // - entry is at address P (= table_base_va + idx*4)
+                    // - target is at address S + offset_in_target
+                    // - We need: *(i32*)P = (S + offset_in_target) - table_base_va
+                    //
+                    // Relocation formula writes: *(i32*)P = S + A - P
+                    // Since P = table_base_va + idx*4:
+                    //   S + A - P = S + A - table_base_va - idx*4
+                    // We need this to equal S + offset_in_target - table_base_va
+                    // Therefore: A = offset_in_target + idx*4
+                    let addend = offset_in_target + (idx * 4) as i64;
+
+                    // 6. Add jump table entry relocation to the data blob
+                    // Find the blob unit and add the relocation
+                    if let Some(blob_unit) = state.units.iter_mut().find(|u| u.id == blob_id) {
+                        let reloc_idx = blob_unit.relocations.len();
+
+                        blob_unit.relocations.push(ExtractedReloc {
+                            offset_within_unit: entry_offset_in_blob,
+                            kind: object::RelocationKind::Relative,
+                            encoding: object::RelocationEncoding::Generic,
+                            size: 32,
+                            addend, // Offset within target function, adjusted for PC-relative
+                            target: RelocTarget::MergedUnit(UnitId(u32::MAX)), // Placeholder
+                        });
+
+                        // Track for resolution
+                        let dep_key = UnitKey {
+                            lib: key.lib.clone(),
+                            sym: if is_internal {
+                                // Internal jump - target is the current function itself
+                                key.sym.clone()
+                            } else {
+                                target_name.clone()
+                            },
                         };
 
-                        // Calculate offset within the target function
-                        let offset_in_target = (*target_addr - target_sym_vaddr) as i64;
-
-                        // Jump table entry format: target = table_base + *(i32*)entry
-                        // Therefore: *(i32*)entry = target - table_base
-                        //
-                        // After relocation:
-                        // - entry is at address P (= table_base_va + idx*4)
-                        // - target is at address S + offset_in_target
-                        // - We need: *(i32*)P = (S + offset_in_target) - table_base_va
-                        //
-                        // Relocation formula writes: *(i32*)P = S + A - P
-                        // Since P = table_base_va + idx*4:
-                        //   S + A - P = S + A - table_base_va - idx*4
-                        // We need this to equal S + offset_in_target - table_base_va
-                        // Therefore: A = offset_in_target + idx*4
-                        let addend = offset_in_target + (idx * 4) as i64;
-
-                        // 6. Add jump table entry relocation to the data blob
-                        // Find the blob unit and add the relocation
-                        if let Some(blob_unit) = state.units.iter_mut().find(|u| u.id == blob_id) {
-                            let reloc_idx = blob_unit.relocations.len();
-
-                            blob_unit.relocations.push(ExtractedReloc {
-                                offset_within_unit: entry_offset_in_blob,
-                                kind: object::RelocationKind::Relative,
-                                encoding: object::RelocationEncoding::Generic,
-                                size: 32,
-                                addend, // Offset within target function, adjusted for PC-relative
-                                target: RelocTarget::MergedUnit(UnitId(u32::MAX)), // Placeholder
-                            });
-
-                            // Track for resolution
-                            let dep_key = UnitKey {
-                                lib: key.lib.clone(),
-                                sym: if is_internal {
-                                    // Internal jump - target is the current function itself
-                                    key.sym.clone()
-                                } else {
-                                    target_name.clone()
-                                },
-                            };
-
-                            // Only add as dependency if it's a real symbol we can extract
-                            // For internal jumps, we don't need to add as a new dependency
-                            // since we're already extracting it
-                            if !is_internal
-                                && find_symbol(elf64, &target_name).is_ok()
-                                && !new_deps.iter().any(|k| k.sym == dep_key.sym)
-                            {
-                                new_deps.push(dep_key.clone());
-                            }
-
-                            // Add to pending resolutions for this blob
-                            // (don't use pending_relocs which is for the current unit's relocations)
-                            state.pending.push((blob_id, reloc_idx, dep_key));
+                        // Only add as dependency if it's a real symbol we can extract
+                        // For internal jumps, we don't need to add as a new dependency
+                        // since we're already extracting it
+                        if !is_internal
+                            && find_symbol(elf64, &target_name).is_ok()
+                            && !new_deps.iter().any(|k| k.sym == dep_key.sym)
+                        {
+                            new_deps.push(dep_key.clone());
                         }
+
+                        // Add to pending resolutions for this blob
+                        // (don't use pending_relocs which is for the current unit's relocations)
+                        state.pending.push((blob_id, reloc_idx, dep_key));
                     }
                 }
             }
@@ -643,22 +640,22 @@ fn find_symbol(elf: &object::read::elf::ElfFile64<'_>, name: &str) -> Result<Sym
 fn find_symbol_at_address(elf: &object::read::elf::ElfFile64<'_>, addr: u64) -> Option<String> {
     // First check .symtab (has local symbols like .cold functions)
     for sym in elf.symbols() {
-        if sym.address() == addr && !sym.is_undefined() {
-            if let Ok(name) = sym.name() {
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
-            }
+        if sym.address() == addr
+            && !sym.is_undefined()
+            && let Ok(name) = sym.name()
+            && !name.is_empty()
+        {
+            return Some(name.to_string());
         }
     }
     // Fall back to .dynsym
     for sym in elf.dynamic_symbols() {
-        if sym.address() == addr && !sym.is_undefined() {
-            if let Ok(name) = sym.name() {
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
-            }
+        if sym.address() == addr
+            && !sym.is_undefined()
+            && let Ok(name) = sym.name()
+            && !name.is_empty()
+        {
+            return Some(name.to_string());
         }
     }
     None
@@ -773,20 +770,20 @@ fn find_plt_target(
             if plt_offset >= entry_offset && plt_offset < entry_offset + 16 {
                 // Found the PLT entry - get the symbol name
                 let sym_idx = rela.r_sym;
-                if let Some(sym) = goblin_lib.dynsyms.get(sym_idx) {
-                    if let Some(name) = goblin_lib.dynstrtab.get_at(sym.st_name) {
-                        return Some(name.to_string());
-                    }
+                if let Some(sym) = goblin_lib.dynsyms.get(sym_idx)
+                    && let Some(name) = goblin_lib.dynstrtab.get_at(sym.st_name)
+                {
+                    return Some(name.to_string());
                 }
             }
         }
 
         // Fallback: try to find symbol at this exact address
         for sym in goblin_lib.dynsyms.iter() {
-            if sym.st_value == addr {
-                if let Some(name) = goblin_lib.dynstrtab.get_at(sym.st_name) {
-                    return Some(name.to_string());
-                }
+            if sym.st_value == addr
+                && let Some(name) = goblin_lib.dynstrtab.get_at(sym.st_name)
+            {
+                return Some(name.to_string());
             }
         }
     }
@@ -868,7 +865,7 @@ fn ensure_data_blob_extracted(
     }
 
     // Find the corresponding section object to extract relocations
-    let section = elf64
+    let _section = elf64
         .sections()
         .find(|s| s.name().ok() == Some(sec_name.as_str()) && s.address() == sec_addr)
         .context("section not found for data blob extraction")?;
@@ -1048,16 +1045,15 @@ fn infer_symbol_size(elf: &object::read::elf::ElfFile64<'_>, sym: &SymInfo) -> R
 
     let mut next_addr: Option<u64> = None;
     for other in elf.symbols().chain(elf.dynamic_symbols()) {
-        if other.address() > sym_vaddr {
-            if let object::SymbolSection::Section(si) = other.section() {
-                if si == sym_section {
-                    let candidate = other.address();
-                    next_addr = Some(match next_addr {
-                        Some(cur) if cur < candidate => cur,
-                        _ => candidate,
-                    });
-                }
-            }
+        if other.address() > sym_vaddr
+            && let object::SymbolSection::Section(si) = other.section()
+            && si == sym_section
+        {
+            let candidate = other.address();
+            next_addr = Some(match next_addr {
+                Some(cur) if cur < candidate => cur,
+                _ => candidate,
+            });
         }
     }
 
@@ -1133,8 +1129,8 @@ fn extract_init_fini_arrays(
             }
 
             let entry = InitFiniEntry {
-                source_lib: lib_path.to_path_buf(),
-                func_vaddr,
+                _source_lib: lib_path.to_path_buf(),
+                _func_vaddr: func_vaddr,
             };
 
             if is_init {

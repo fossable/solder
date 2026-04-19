@@ -84,6 +84,7 @@ fn apply_unit_relocations(
 ///   `s`        — symbol virtual address
 ///   `a`        — addend
 ///   `p`        — patch site virtual address (= unit base VA + offset)
+#[allow(clippy::too_many_arguments)]
 pub fn apply_one_reloc(
     bytes: &mut [u8],
     kind: object::RelocationKind,

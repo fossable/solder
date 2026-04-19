@@ -11,17 +11,18 @@ dependencies altogether.
 
 ## Partial static linking
 
-When you need a partially static binary, not all build tools make this easy. If
-you find yourself hacking `configure` scripts or generated Makefiles to
-accomplish this, consider post-processing your binary with `solder` instead.
+The primary use case for `solder` is _partial static linking_.
+
+Depending on what build tool you're using, you can have vastly different
+experiences. Sometimes you can simply add `-l:libexample.a` to your `LDFLAGS`
+and it works first try. Sometimes it's not that easy. If you find yourself
+hacking `configure` scripts or generated Makefiles to accomplish this, consider
+just post-processing your binary with `solder` instead.
 
 You don't have to recompile anything. Just give it your executable and the
-shared objects you want statically linked.
-
-### Excluded libraries
-
-The following libraries are excluded because static linking them can cause
-unpleasant problems (even when you initially static link them at build time).
+shared objects you want statically linked. Just note the following libraries are
+excluded because static linking them can cause unpleasant problems (even when
+you properly static link them at build time).
 
 - ld-linux
 - ld-musl
@@ -35,6 +36,14 @@ unpleasant problems (even when you initially static link them at build time).
 - libresolv
 - libnss\_
 - libgcc_s
+
+### Nixpkgs
+
+For binaries built from [nixpkgs](https://github.com/NixOS/nixpkgs), you can
+make them fully portable to other systems by first `solder`-ing in the
+libraries, then `patchelf`-ing the library path back to normal. I've used this
+to take advantage of the vast quantity of software available in nixpkgs on
+embedded systems where I can't install `nix`, etc.
 
 ## Usage
 
