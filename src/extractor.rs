@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind as ObjSectionKind};
 use tracing::{debug, warn};
 
@@ -133,7 +133,7 @@ pub fn extract_units(
                 );
                 unresolved_relocs.push((unit_id, reloc_idx));
                 continue;
-            },
+            }
         };
         let unit = state
             .units
@@ -166,8 +166,14 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
     if !state.processed_libs.contains(&key.lib) {
         state.processed_libs.insert(key.lib.clone());
         let lib_init_fini = extract_init_fini_arrays(&lib_bytes, &key.lib)?;
-        state.init_fini.init_entries.extend(lib_init_fini.init_entries);
-        state.init_fini.fini_entries.extend(lib_init_fini.fini_entries);
+        state
+            .init_fini
+            .init_entries
+            .extend(lib_init_fini.init_entries);
+        state
+            .init_fini
+            .fini_entries
+            .extend(lib_init_fini.fini_entries);
     }
 
     let object_file = object::File::parse(lib_bytes.as_slice())
@@ -291,7 +297,8 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
                 } else {
                     // Try to extract this data section containing the symbol
                     // This will populate state.data_blobs if it's a data section
-                    let extract_result = ensure_data_blob_extracted(elf64, ts_vaddr, &key.lib, state);
+                    let extract_result =
+                        ensure_data_blob_extracted(elf64, ts_vaddr, &key.lib, state);
                     if let Ok(Some((blob_id, blob_base, blob_deps))) = extract_result {
                         let offset_in_blob = ts_vaddr - blob_base;
                         for dep in blob_deps {
@@ -436,9 +443,9 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
                     });
                 } else {
                     warn!(
-                        symbol=key.sym,
-                        offset=format_args!("{:#x}", rip_ref.offset),
-                        target=format_args!("{:#x}", target_addr),
+                        symbol = key.sym,
+                        offset = format_args!("{:#x}", rip_ref.offset),
+                        target = format_args!("{:#x}", target_addr),
                         "RIP-relative data ref target not found"
                     );
                 }
@@ -448,15 +455,15 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
 
     // Jump table detection via symbolic execution
     if section_kind == SectionKind::Text {
-        if let Ok(jump_tables) = crate::jump_table::detect_jump_tables(
-            &bytes,
-            sym_vaddr,
-            &key.sym,
-            elf64,
-            &lib_bytes,
-        ) {
+        if let Ok(jump_tables) =
+            crate::jump_table::detect_jump_tables(&bytes, sym_vaddr, &key.sym, elf64, &lib_bytes)
+        {
             if !jump_tables.is_empty() {
-                debug!(count=jump_tables.len(), symbol=key.sym, "Found jump tables");
+                debug!(
+                    count = jump_tables.len(),
+                    symbol = key.sym,
+                    "Found jump tables"
+                );
             }
 
             for table in jump_tables {
@@ -471,19 +478,25 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
                     }
                     // 2. Create relocations for each table entry
                     for (idx, target_addr) in table.targets.iter().enumerate() {
-                        let entry_offset_in_blob = (table.table_vaddr - blob_base) + (idx * 4) as u64;
+                        let entry_offset_in_blob =
+                            (table.table_vaddr - blob_base) + (idx * 4) as u64;
 
                         // Skip if a relocation already exists at this offset (from another
                         // function detecting an overlapping table at the same .rodata address)
                         if let Some(blob_unit) = state.units.iter().find(|u| u.id == blob_id) {
-                            if blob_unit.relocations.iter().any(|r| r.offset_within_unit == entry_offset_in_blob) {
+                            if blob_unit
+                                .relocations
+                                .iter()
+                                .any(|r| r.offset_within_unit == entry_offset_in_blob)
+                            {
                                 continue;
                             }
                         }
 
                         // 3. Find or extract target function
-                        let target_name = crate::jump_table::find_symbol_at_address(elf64, *target_addr)
-                            .unwrap_or_else(|| format!("jumptarget_{:x}", target_addr));
+                        let target_name =
+                            crate::jump_table::find_symbol_at_address(elf64, *target_addr)
+                                .unwrap_or_else(|| format!("jumptarget_{:x}", target_addr));
 
                         // 4. Check if target is within our own function (intra-function jump)
                         let is_internal = *target_addr >= sym_vaddr
@@ -527,8 +540,8 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
                                 kind: object::RelocationKind::Relative,
                                 encoding: object::RelocationEncoding::Generic,
                                 size: 32,
-                                addend,  // Offset within target function, adjusted for PC-relative
-                                target: RelocTarget::MergedUnit(UnitId(u32::MAX)),  // Placeholder
+                                addend, // Offset within target function, adjusted for PC-relative
+                                target: RelocTarget::MergedUnit(UnitId(u32::MAX)), // Placeholder
                             });
 
                             // Track for resolution
@@ -545,8 +558,10 @@ fn process_symbol(key: &UnitKey, state: &mut ExtractionState) -> Result<Vec<Unit
                             // Only add as dependency if it's a real symbol we can extract
                             // For internal jumps, we don't need to add as a new dependency
                             // since we're already extracting it
-                            if !is_internal && find_symbol(elf64, &target_name).is_ok()
-                                && !new_deps.iter().any(|k| k.sym == dep_key.sym) {
+                            if !is_internal
+                                && find_symbol(elf64, &target_name).is_ok()
+                                && !new_deps.iter().any(|k| k.sym == dep_key.sym)
+                            {
                                 new_deps.push(dep_key.clone());
                             }
 
@@ -674,7 +689,9 @@ fn scan_rip_relative_refs(bytes: &[u8], base_vaddr: u64) -> Vec<RipRelativeRef> 
         let instr_offset = (instr.ip() - base_vaddr) as usize;
 
         match instr.flow_control() {
-            FlowControl::Call | FlowControl::UnconditionalBranch | FlowControl::ConditionalBranch => {
+            FlowControl::Call
+            | FlowControl::UnconditionalBranch
+            | FlowControl::ConditionalBranch => {
                 // Near call/jmp/jcc with rel32 — the displacement starts after the opcode bytes
                 if instr.op_count() >= 1 && instr.op_kind(0) == OpKind::NearBranch64 {
                     let target = instr.near_branch_target();
@@ -778,10 +795,7 @@ fn find_plt_target(
 
 /// Check if a virtual address falls within an already-extracted data blob.
 /// Returns (blob_id, blob_base_vaddr) if found.
-fn find_existing_data_blob(
-    addr: u64,
-    state: &ExtractionState,
-) -> Option<(UnitId, u64)> {
+fn find_existing_data_blob(addr: u64, state: &ExtractionState) -> Option<(UnitId, u64)> {
     for info in state.data_blobs.values() {
         if addr >= info.base_vaddr && addr < info.base_vaddr + info.size as u64 {
             return Some((info.id, info.base_vaddr));
@@ -809,12 +823,13 @@ fn find_section_for_address(
                 _ => return None, // Skip unsupported section types
             };
             // Handle NOBITS sections (.bss) which have no data in the file
-            let data = if kind == SectionKind::Data && section.data().ok().is_none_or(|d| d.is_empty()) {
-                // NOBITS section - create zero-filled data
-                vec![0u8; sec_size as usize]
-            } else {
-                section.data().ok()?.to_vec()
-            };
+            let data =
+                if kind == SectionKind::Data && section.data().ok().is_none_or(|d| d.is_empty()) {
+                    // NOBITS section - create zero-filled data
+                    vec![0u8; sec_size as usize]
+                } else {
+                    section.data().ok()?.to_vec()
+                };
             return Some((name, sec_addr, data.len(), data, kind));
         }
     }
@@ -855,10 +870,7 @@ fn ensure_data_blob_extracted(
     // Find the corresponding section object to extract relocations
     let section = elf64
         .sections()
-        .find(|s| {
-            s.name().ok() == Some(sec_name.as_str())
-                && s.address() == sec_addr
-        })
+        .find(|s| s.name().ok() == Some(sec_name.as_str()) && s.address() == sec_addr)
         .context("section not found for data blob extraction")?;
 
     // Collect relocations that fall within this data section's byte range.
@@ -871,115 +883,117 @@ fn ensure_data_blob_extracted(
     // Iterate through dynamic relocations and collect those within this section's range
     if let Some(dyn_relocs) = elf64.dynamic_relocations() {
         for (roff, reloc) in dyn_relocs {
-        // Only care about relocations within this section's range
-        if roff < sec_addr || roff >= sec_addr + sec_size as u64 {
-            continue;
-        }
-        let offset_within_unit = roff - sec_addr;
-
-        // Validate relocation kind (same as code extraction)
-        let kind = reloc.kind();
-        let encoding = reloc.encoding();
-        if kind == object::RelocationKind::Got
-            || kind == object::RelocationKind::GotRelative
-            || kind == object::RelocationKind::GotBaseRelative
-            || kind == object::RelocationKind::GotBaseOffset
-        {
-            bail!(
-                "data section '{}' in {}: {} relocation is not supported in Tier 1",
-                sec_name,
-                lib.display(),
-                describe_reloc(kind, encoding)
-            );
-        }
-
-        // Resolve the relocation target symbol
-        let target_sym = match reloc.target() {
-            object::RelocationTarget::Symbol(si) => elf64.symbol_by_index(si).ok(),
-            _ => None,
-        };
-
-        let target = if let Some(ts) = target_sym {
-            let ts_name = ts.name().unwrap_or("").to_owned();
-            if ts.is_undefined() || ts_name.is_empty() {
-                // External symbol
-                if !state.external_syms.contains(&ts_name) && !ts_name.is_empty() {
-                    bail!(
-                        "data section '{}' in {}: references external symbol '{}' which is not \
-                         exported by the executable — cannot merge this library",
-                        sec_name,
-                        lib.display(),
-                        ts_name
-                    );
-                }
-                RelocTarget::External(ts_name)
-            } else {
-                // Internal to the library
-                let dep_key = UnitKey {
-                    lib: lib.clone(),
-                    sym: ts_name,
-                };
-                if !new_deps.iter().any(|k| k.sym == dep_key.sym) {
-                    new_deps.push(dep_key.clone());
-                }
-                // Track for later resolution
-                pending_relocs.push((relocations.len(), dep_key));
-                // Placeholder — resolved in second pass
-                RelocTarget::MergedUnit(UnitId(u32::MAX))
-            }
-        } else {
-            // RELATIVE relocation (no symbol, addend is the target)
-            // For R_X86_64_RELATIVE: *(reloc_offset) = load_base + addend
-            // The addend contains the original VA of the code/data being pointed to
-            let addend_va = reloc.addend() as u64;
-
-            // Check if the target is within an already-extracted data blob
-            if let Some((blob_id, blob_base)) = find_existing_data_blob(addend_va, state) {
-                let offset_in_blob = addend_va - blob_base;
-                RelocTarget::DataBlobOffset(blob_id, offset_in_blob)
-            } else if let Some(target_name) = find_symbol_at_address(elf64, addend_va) {
-                // Try to find what symbol this points to
-                // Special case: __dso_handle and other marker symbols should be data offsets
-                if target_name == "__dso_handle" || target_name.starts_with("_") && target_name.contains("handle") {
-                    // Skip these marker symbols - they're not real code/data to extract
-                    continue;
-                }
-
-                // This could be a pointer to code - we'll try to resolve it
-                // Note: we don't add these as new_deps because they might be local symbols
-                // that we don't want to extract as separate units
-                // Instead, we'll just create a pending relocation and let the second pass resolve it
-
-                // Only create a relocation if this symbol is already being extracted
-                // (i.e., it's in the extracted map or will be extracted)
-                let dep_key = UnitKey {
-                    lib: lib.clone(),
-                    sym: target_name,
-                };
-
-                if !new_deps.iter().any(|k| k.sym == dep_key.sym) {
-                    new_deps.push(dep_key.clone());
-                }
-                pending_relocs.push((relocations.len(), dep_key));
-                RelocTarget::MergedUnit(UnitId(u32::MAX))
-            } else {
-                // Unknown target address, skip this relocation
+            // Only care about relocations within this section's range
+            if roff < sec_addr || roff >= sec_addr + sec_size as u64 {
                 continue;
             }
-        };
+            let offset_within_unit = roff - sec_addr;
 
-        // For RELATIVE relocations, the size might be reported as 0 by the object crate
-        // but we know it's always 64 bits (8 bytes) for R_X86_64_RELATIVE
-        let reloc_size = if reloc.size() == 0 { 64 } else { reloc.size() };
+            // Validate relocation kind (same as code extraction)
+            let kind = reloc.kind();
+            let encoding = reloc.encoding();
+            if kind == object::RelocationKind::Got
+                || kind == object::RelocationKind::GotRelative
+                || kind == object::RelocationKind::GotBaseRelative
+                || kind == object::RelocationKind::GotBaseOffset
+            {
+                bail!(
+                    "data section '{}' in {}: {} relocation is not supported in Tier 1",
+                    sec_name,
+                    lib.display(),
+                    describe_reloc(kind, encoding)
+                );
+            }
 
-        relocations.push(ExtractedReloc {
-            offset_within_unit,
-            kind,
-            encoding,
-            size: reloc_size,
-            addend: reloc.addend(),
-            target,
-        });
+            // Resolve the relocation target symbol
+            let target_sym = match reloc.target() {
+                object::RelocationTarget::Symbol(si) => elf64.symbol_by_index(si).ok(),
+                _ => None,
+            };
+
+            let target = if let Some(ts) = target_sym {
+                let ts_name = ts.name().unwrap_or("").to_owned();
+                if ts.is_undefined() || ts_name.is_empty() {
+                    // External symbol
+                    if !state.external_syms.contains(&ts_name) && !ts_name.is_empty() {
+                        bail!(
+                            "data section '{}' in {}: references external symbol '{}' which is not \
+                         exported by the executable — cannot merge this library",
+                            sec_name,
+                            lib.display(),
+                            ts_name
+                        );
+                    }
+                    RelocTarget::External(ts_name)
+                } else {
+                    // Internal to the library
+                    let dep_key = UnitKey {
+                        lib: lib.clone(),
+                        sym: ts_name,
+                    };
+                    if !new_deps.iter().any(|k| k.sym == dep_key.sym) {
+                        new_deps.push(dep_key.clone());
+                    }
+                    // Track for later resolution
+                    pending_relocs.push((relocations.len(), dep_key));
+                    // Placeholder — resolved in second pass
+                    RelocTarget::MergedUnit(UnitId(u32::MAX))
+                }
+            } else {
+                // RELATIVE relocation (no symbol, addend is the target)
+                // For R_X86_64_RELATIVE: *(reloc_offset) = load_base + addend
+                // The addend contains the original VA of the code/data being pointed to
+                let addend_va = reloc.addend() as u64;
+
+                // Check if the target is within an already-extracted data blob
+                if let Some((blob_id, blob_base)) = find_existing_data_blob(addend_va, state) {
+                    let offset_in_blob = addend_va - blob_base;
+                    RelocTarget::DataBlobOffset(blob_id, offset_in_blob)
+                } else if let Some(target_name) = find_symbol_at_address(elf64, addend_va) {
+                    // Try to find what symbol this points to
+                    // Special case: __dso_handle and other marker symbols should be data offsets
+                    if target_name == "__dso_handle"
+                        || target_name.starts_with("_") && target_name.contains("handle")
+                    {
+                        // Skip these marker symbols - they're not real code/data to extract
+                        continue;
+                    }
+
+                    // This could be a pointer to code - we'll try to resolve it
+                    // Note: we don't add these as new_deps because they might be local symbols
+                    // that we don't want to extract as separate units
+                    // Instead, we'll just create a pending relocation and let the second pass resolve it
+
+                    // Only create a relocation if this symbol is already being extracted
+                    // (i.e., it's in the extracted map or will be extracted)
+                    let dep_key = UnitKey {
+                        lib: lib.clone(),
+                        sym: target_name,
+                    };
+
+                    if !new_deps.iter().any(|k| k.sym == dep_key.sym) {
+                        new_deps.push(dep_key.clone());
+                    }
+                    pending_relocs.push((relocations.len(), dep_key));
+                    RelocTarget::MergedUnit(UnitId(u32::MAX))
+                } else {
+                    // Unknown target address, skip this relocation
+                    continue;
+                }
+            };
+
+            // For RELATIVE relocations, the size might be reported as 0 by the object crate
+            // but we know it's always 64 bits (8 bytes) for R_X86_64_RELATIVE
+            let reloc_size = if reloc.size() == 0 { 64 } else { reloc.size() };
+
+            relocations.push(ExtractedReloc {
+                offset_within_unit,
+                kind,
+                encoding,
+                size: reloc_size,
+                addend: reloc.addend(),
+                target,
+            });
         }
     }
 
@@ -992,12 +1006,20 @@ fn ensure_data_blob_extracted(
     }
 
     if !relocations.is_empty() {
-        debug!(section=sec_name, relocations=relocations.len(), "Extracted data blob");
+        debug!(
+            section = sec_name,
+            relocations = relocations.len(),
+            "Extracted data blob"
+        );
     }
 
     let unit = ExtractedUnit {
         id,
-        name: format!("{}:{}", lib.file_name().unwrap_or_default().to_string_lossy(), sec_name),
+        name: format!(
+            "{}:{}",
+            lib.file_name().unwrap_or_default().to_string_lossy(),
+            sec_name
+        ),
         source_lib: lib.clone(),
         size: sec_size,
         bytes: sec_data,

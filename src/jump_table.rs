@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind, Register};
 use object::{Object, ObjectSection, ObjectSymbol};
 use tracing::debug;
@@ -94,7 +94,7 @@ pub fn detect_jump_tables(
         return Ok(Vec::new());
     }
 
-    debug!(symbol=symbol_name, "Scanning for jump tables");
+    debug!(symbol = symbol_name, "Scanning for jump tables");
 
     // Symbolic execution pass
     let mut regs: HashMap<Register, AbstractValue> = HashMap::new();
@@ -126,8 +126,8 @@ pub fn detect_jump_tables(
                                 regs.get(&gpr)
                             {
                                 debug!(
-                                    table_base=format_args!("{:#x}", table_base),
-                                    jmp_addr=format_args!("{:#x}", instr.ip()),
+                                    table_base = format_args!("{:#x}", table_base),
+                                    jmp_addr = format_args!("{:#x}", instr.ip()),
                                     "Confirmed jump table"
                                 );
                                 confirmed_bases.insert(*table_base);
@@ -157,8 +157,8 @@ pub fn detect_jump_tables(
         match identify_table_bounds(elf, table_addr, base_vaddr, code.len() as u64, next_table) {
             Ok(table) => {
                 debug!(
-                    vaddr=format_args!("{:#x}", table.table_vaddr),
-                    entries=table.num_entries,
+                    vaddr = format_args!("{:#x}", table.table_vaddr),
+                    entries = table.num_entries,
                     "Validated jump table"
                 );
                 jump_tables.push(table);
@@ -203,8 +203,7 @@ fn symbolic_execution_scan(
                         if let Some(gpr) = to_gpr64(dst) {
                             if instr.is_ip_rel_memory_operand() {
                                 let target = instr.ip_rel_memory_address();
-                                let accept =
-                                    rodata_filter.map_or(true, |f| f(target));
+                                let accept = rodata_filter.map_or(true, |f| f(target));
                                 if accept {
                                     regs.insert(gpr, AbstractValue::RodataAddr(target));
                                     continue;
@@ -221,8 +220,7 @@ fn symbolic_execution_scan(
                                     {
                                         let base_val = regs.get(&gpr_base).cloned();
                                         let index_val = regs.get(&gpr_index).cloned();
-                                        if let Some(table_base) =
-                                            try_combine(&base_val, &index_val)
+                                        if let Some(table_base) = try_combine(&base_val, &index_val)
                                         {
                                             regs.insert(
                                                 gpr,
@@ -300,9 +298,7 @@ fn handle_lea(
         let index_reg = instr.memory_index();
 
         if base_reg != Register::None && index_reg != Register::None {
-            if let (Some(gpr_base), Some(gpr_index)) =
-                (to_gpr64(base_reg), to_gpr64(index_reg))
-            {
+            if let (Some(gpr_base), Some(gpr_index)) = (to_gpr64(base_reg), to_gpr64(index_reg)) {
                 let base_val = regs.get(&gpr_base).cloned();
                 let index_val = regs.get(&gpr_index).cloned();
                 if let Some(table_base) = try_combine(&base_val, &index_val) {
@@ -336,10 +332,7 @@ fn handle_movsxd(instr: &Instruction, regs: &mut HashMap<Register, AbstractValue
         if base_reg != Register::None {
             if let Some(gpr_base) = to_gpr64(base_reg) {
                 if let Some(AbstractValue::RodataAddr(addr)) = regs.get(&gpr_base) {
-                    regs.insert(
-                        gpr_dst,
-                        AbstractValue::TableEntry { table_base: *addr },
-                    );
+                    regs.insert(gpr_dst, AbstractValue::TableEntry { table_base: *addr });
                     return;
                 }
             }
@@ -567,10 +560,7 @@ pub fn identify_table_bounds(
 /// Find the symbol name at a given virtual address, if any exists.
 /// Checks if address falls within the symbol's range (address to address+size).
 #[allow(dead_code)]
-pub fn find_symbol_at_address(
-    elf: &object::read::elf::ElfFile64<'_>,
-    addr: u64,
-) -> Option<String> {
+pub fn find_symbol_at_address(elf: &object::read::elf::ElfFile64<'_>, addr: u64) -> Option<String> {
     // First check .symtab (has local symbols)
     for sym in elf.symbols() {
         let sym_addr = sym.address();
@@ -802,7 +792,10 @@ mod tests {
         code.extend_from_slice(&[0xFF, 0xE3]);
 
         let bases = symbolic_execution_scan(&code, code_base, None);
-        assert!(bases.is_empty(), "mismatched table bases should not be detected");
+        assert!(
+            bases.is_empty(),
+            "mismatched table bases should not be detected"
+        );
     }
 
     #[test]

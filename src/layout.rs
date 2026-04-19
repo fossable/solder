@@ -41,7 +41,12 @@ pub fn plan_layout(
     // Assign virtual addresses, packing units together with alignment.
     let mut offset: u64 = 0;
 
-    debug!(text=text.len(), rodata=rodata.len(), data=data.len(), "Layout unit counts");
+    debug!(
+        text = text.len(),
+        rodata = rodata.len(),
+        data = data.len(),
+        "Layout unit counts"
+    );
     let text_units = assign_addresses(load_address, &mut offset, text);
     let rodata_units = assign_addresses(load_address, &mut offset, rodata);
     let data_units = assign_addresses(load_address, &mut offset, data);
@@ -177,10 +182,10 @@ fn assign_addresses(
             *offset = align_up(*offset, align);
             let assigned_vaddr = load_address + *offset;
             trace!(
-                name=unit.name,
-                unit_id=unit.id.0,
-                size=format_args!("{:#x}", unit.size),
-                vaddr=format_args!("{:#x}", assigned_vaddr),
+                name = unit.name,
+                unit_id = unit.id.0,
+                size = format_args!("{:#x}", unit.size),
+                vaddr = format_args!("{:#x}", assigned_vaddr),
                 "Assigned unit VA"
             );
             *offset += unit.size as u64;
@@ -251,8 +256,10 @@ fn plan_init_fini_arrays(
     offset: &mut u64,
 ) -> Result<Option<InitFiniPlan>> {
     // Check if the executable has init/fini arrays that we need to relocate
-    let has_exe_init = exe_init_fini.init_array_vaddr.is_some() && exe_init_fini.init_array_size > 0;
-    let has_exe_fini = exe_init_fini.fini_array_vaddr.is_some() && exe_init_fini.fini_array_size > 0;
+    let has_exe_init =
+        exe_init_fini.init_array_vaddr.is_some() && exe_init_fini.init_array_size > 0;
+    let has_exe_fini =
+        exe_init_fini.fini_array_vaddr.is_some() && exe_init_fini.fini_array_size > 0;
 
     // We only need to create a plan if the exe has init/fini arrays and we're
     // relocating them to the merged segment. Note: we don't add merged library

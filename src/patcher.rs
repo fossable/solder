@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::types::{MergePlan, RelativeReloc};
 
@@ -257,7 +257,11 @@ fn remove_verneed_entries(bytes: &mut Vec<u8>, plan: &MergePlan) -> Result<()> {
 
         let vn_next = u32::from_le_bytes(bytes[offset + 12..offset + 16].try_into().unwrap());
         let is_last = vn_next == 0;
-        let next_offset = if is_last { None } else { Some(offset + vn_next as usize) };
+        let next_offset = if is_last {
+            None
+        } else {
+            Some(offset + vn_next as usize)
+        };
 
         if entries_to_remove.contains(&(offset as u64)) {
             // This entry should be removed
@@ -307,7 +311,8 @@ fn remove_verneed_entries(bytes: &mut Vec<u8>, plan: &MergePlan) -> Result<()> {
         if let Some(idx) = verneednum_dyn_idx {
             let entry_offset = dyn_section_offset as usize + idx * 16 + 8; // d_val is at offset 8
             if entry_offset + 8 <= bytes.len() {
-                let current = u64::from_le_bytes(bytes[entry_offset..entry_offset + 8].try_into().unwrap());
+                let current =
+                    u64::from_le_bytes(bytes[entry_offset..entry_offset + 8].try_into().unwrap());
                 let new_count = current.saturating_sub(removed_count);
                 bytes[entry_offset..entry_offset + 8].copy_from_slice(&new_count.to_le_bytes());
             }

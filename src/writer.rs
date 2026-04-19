@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::layout::align_up;
 use crate::types::{MergePlan, RelativeReloc};
@@ -192,11 +192,11 @@ pub fn write_output(
 
         // Update PT_PHDR to point to the new PHT location
         if phdr.p_type(endian) == PT_PHDR {
-            write_u64_le(&mut out, dst + 8, pht_file_offset);    // p_offset
-            write_u64_le(&mut out, dst + 16, pht_vaddr);          // p_vaddr
-            write_u64_le(&mut out, dst + 24, pht_vaddr);          // p_paddr
-            write_u64_le(&mut out, dst + 32, pht_size);           // p_filesz
-            write_u64_le(&mut out, dst + 40, pht_size);           // p_memsz
+            write_u64_le(&mut out, dst + 8, pht_file_offset); // p_offset
+            write_u64_le(&mut out, dst + 16, pht_vaddr); // p_vaddr
+            write_u64_le(&mut out, dst + 24, pht_vaddr); // p_paddr
+            write_u64_le(&mut out, dst + 32, pht_size); // p_filesz
+            write_u64_le(&mut out, dst + 40, pht_size); // p_memsz
         }
 
         written += phdr_entry_size;
@@ -209,8 +209,8 @@ pub fn write_output(
     write_u64_le(&mut out, dst + 8, seg_file_offset);
     write_u64_le(&mut out, dst + 16, plan.load_address);
     write_u64_le(&mut out, dst + 24, plan.load_address); // p_paddr = p_vaddr
-    write_u64_le(&mut out, dst + 32, total_seg_size);     // p_filesz includes PHT
-    write_u64_le(&mut out, dst + 40, total_seg_size);     // p_memsz includes PHT
+    write_u64_le(&mut out, dst + 32, total_seg_size); // p_filesz includes PHT
+    write_u64_le(&mut out, dst + 40, total_seg_size); // p_memsz includes PHT
     write_u64_le(&mut out, dst + 48, 0x1000); // p_align = 4 KiB
 
     // Update ELF header: e_phoff and e_phnum.
@@ -385,8 +385,12 @@ fn build_extended_segment_with_rela(
     dyn_info: &DynamicInfo,
     _seg_file_offset: u64,
 ) -> Result<(Vec<u8>, Option<(u64, u64, u64)>)> {
-    let old_rela_va = dyn_info.dt_rela_val.context("PIE executable missing DT_RELA")?;
-    let old_relasz = dyn_info.dt_relasz_val.context("PIE executable missing DT_RELASZ")?;
+    let old_rela_va = dyn_info
+        .dt_rela_val
+        .context("PIE executable missing DT_RELA")?;
+    let old_relasz = dyn_info
+        .dt_relasz_val
+        .context("PIE executable missing DT_RELASZ")?;
     let old_relacount = dyn_info.dt_relacount_val.unwrap_or(0);
 
     // Read existing .rela.dyn entries from the original exe

@@ -5,7 +5,7 @@ use object::read::elf::ElfFile64;
 use object::{Object, ObjectSection};
 
 use crate::elf_reader::va_to_file_offset;
-use crate::lib_discovery::{is_excluded, resolve_library, LdsoCache};
+use crate::lib_discovery::{LdsoCache, is_excluded, resolve_library};
 use crate::types::{ImportKind, ImportedSymbol};
 
 /// Parse the dynamic section of an ELF to extract DT_NEEDED, DT_RPATH, and DT_RUNPATH.

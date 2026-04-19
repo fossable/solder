@@ -46,10 +46,10 @@ struct Cli {
     #[arg(long)]
     dry_run: bool,
 
+    // TODO REMOVE
     /// Override the base virtual address for the merged segment (hex, e.g. 0x800000)
     #[arg(long, value_name = "HEX")]
     merge_base: Option<String>,
-
 }
 
 fn main() {
@@ -150,12 +150,16 @@ fn run() -> Result<()> {
         );
     }
     let total: usize = units.iter().map(|u| u.size).sum();
-    info!(total_bytes=total, units=units.len(), "Extraction complete");
+    info!(
+        total_bytes = total,
+        units = units.len(),
+        "Extraction complete"
+    );
 
     if !init_fini.init_entries.is_empty() || !init_fini.fini_entries.is_empty() {
         info!(
-            init_entries=init_fini.init_entries.len(),
-            fini_entries=init_fini.fini_entries.len(),
+            init_entries = init_fini.init_entries.len(),
+            fini_entries = init_fini.fini_entries.len(),
             "Init/fini arrays"
         );
     }
@@ -185,16 +189,16 @@ fn run() -> Result<()> {
     )?;
 
     info!(
-        load_address=format_args!("0x{:016x}", plan.load_address),
-        got_patches=plan.got_patches.len(),
-        trampolines=plan.trampoline_stubs.len(),
+        load_address = format_args!("0x{:016x}", plan.load_address),
+        got_patches = plan.got_patches.len(),
+        trampolines = plan.trampoline_stubs.len(),
         "Merge plan"
     );
     for t in &plan.trampoline_stubs {
         info!(
-            symbol=t.symbol_name,
-            vaddr=format_args!("0x{:x}", t.vaddr),
-            got_vaddr=format_args!("0x{:x}", t.target_got_vaddr),
+            symbol = t.symbol_name,
+            vaddr = format_args!("0x{:x}", t.vaddr),
+            got_vaddr = format_args!("0x{:x}", t.target_got_vaddr),
             "Trampoline"
         );
     }
@@ -223,7 +227,10 @@ fn run() -> Result<()> {
     writer::write_output(&patched_exe, &plan, &merged_seg, &cli.input)?;
 
     if plan.is_pie {
-        info!(count=plan.relative_relocs.len(), "Added R_X86_64_RELATIVE relocations for PIE");
+        info!(
+            count = plan.relative_relocs.len(),
+            "Added R_X86_64_RELATIVE relocations for PIE"
+        );
     }
 
     info!(

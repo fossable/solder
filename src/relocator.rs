@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::types::{AssignedUnit, MergePlan, RelocTarget};
 
@@ -44,9 +44,9 @@ fn apply_unit_relocations(
                 .get(name)
                 .with_context(|| format!("no trampoline for external symbol '{name}'"))?,
             RelocTarget::DataBlobOffset(blob_id, offset) => {
-                let blob_base = *id_to_vaddr
-                    .get(blob_id)
-                    .with_context(|| format!("data blob UnitId({}) not found in plan", blob_id.0))?;
+                let blob_base = *id_to_vaddr.get(blob_id).with_context(|| {
+                    format!("data blob UnitId({}) not found in plan", blob_id.0)
+                })?;
                 blob_base + offset
             }
         };
