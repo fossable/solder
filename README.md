@@ -37,6 +37,10 @@ you properly static link them at build time).
 - libnss\_
 - libgcc_s
 
+Only symbols that are actually used will be merged into the final executable.
+For example, `md5sum` is only about 56K, but it dynamically links
+`libcrypto.so.3` which is 6.5M.
+
 ### Nixpkgs
 
 For binaries built from [nixpkgs](https://github.com/NixOS/nixpkgs), you can

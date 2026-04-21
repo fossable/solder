@@ -8,7 +8,12 @@ eliminating runtime dependencies.
 
 ```bash
 cargo build --release
-./target/release/solder ./binary -m libfoo.so.1 
+./target/release/solder ./binary -m libfoo.so.1
 # Restore original, run solder, test
 cp ./grep.bak ./grep && chmod u+w ./grep
-./target/release/solder ./grep -m libpcre2-8.so.0 ```
+./target/release/solder ./grep -m libpcre2-8.so.0
+```
+
+## TO-DO
+
+- Test cases against real binaries
