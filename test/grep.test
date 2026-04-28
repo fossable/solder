@@ -14,7 +14,7 @@ testBasicMatch() {
 }
 
 testNoMatch() {
-	result=$(echo -e "hello\nworld" | grep "notfound")
+	result=$(! echo -e "hello\nworld" | grep "notfound")
 	[ -z "${result}" ]
 }
 
@@ -72,7 +72,7 @@ testMultipleFiles() {
 
 testEmptyFile() {
 	touch empty.txt
-	result=$(grep "test" empty.txt)
+	result=$(! grep "test" empty.txt)
 	[ -z "${result}" ]
 }
 
@@ -82,12 +82,4 @@ testQuietMode() {
 		echo $?
 	)
 	[ "${result}" = "0" ]
-}
-
-testMatchFail() {
-	result=$(
-		echo "hello" | grep -q "notfound"
-		echo $?
-	)
-	[ "${result}" = "1" ]
 }

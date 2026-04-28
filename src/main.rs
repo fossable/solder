@@ -23,6 +23,7 @@ use symbol_analysis::{collect_imports, parse_dynamic};
 
 #[derive(Parser)]
 #[command(
+    version,
     name = "solder",
     about = "Post-link static merger for ELF shared libraries\n\n\
              Extracts the symbols actually used from shared libraries and merges\n\
